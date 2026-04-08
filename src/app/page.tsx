@@ -81,7 +81,7 @@ export default function Home() {
 
       const { text } = await extractRes.json();
 
-      // Step 2: Generate slides with AI
+      // Step 2: Generate slides with AI (streaming)
       setProgressStep(1);
       const generateRes = await fetch('/api/generate-slides', {
         method: 'POST',
@@ -90,11 +90,46 @@ export default function Home() {
       });
 
       if (!generateRes.ok) {
-        const data = await generateRes.json();
-        throw new Error(data.error || 'スライド生成に失敗しました');
+        const errorText = await generateRes.text();
+        try {
+          const data = JSON.parse(errorText);
+          throw new Error(data.error || 'スライド生成に失敗しました');
+        } catch {
+          throw new Error('スライド生成に失敗しました');
+        }
       }
 
-      const { slides: generatedSlides } = await generateRes.json();
+      // SSEストリームを読み取り
+      const reader = generateRes.body?.getReader();
+      if (!reader) throw new Error('ストリームの読み取りに失敗しました');
+
+      const decoder = new TextDecoder();
+      let generatedSlides: Slide[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const text2 = decoder.decode(value, { stream: true });
+        const lines = text2.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === 'done') {
+                generatedSlides = data.slides;
+              } else if (data.type === 'error') {
+                throw new Error(data.error);
+              }
+            } catch (e) {
+              if (e instanceof Error && e.message !== 'done') {
+                // JSON parse error for progress chunks - ignore
+              }
+            }
+          }
+        }
+      }
 
       // Step 3: Done
       setProgressStep(2);
